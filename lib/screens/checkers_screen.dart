@@ -63,8 +63,6 @@ class _CheckersScreenState extends State<CheckersScreen> {
       aiColor: PieceColor.black,
     );
 
-    widget.settings.addListener(_settingsChanged);
-
     audioService.setSoundEnabled(
       widget.settings.soundEnabled,
     );
@@ -87,7 +85,6 @@ class _CheckersScreenState extends State<CheckersScreen> {
   @override
   void dispose() {
     _saveTimer?.cancel();
-    widget.settings.removeListener(_settingsChanged);
     super.dispose();
   }
 
@@ -135,30 +132,6 @@ class _CheckersScreenState extends State<CheckersScreen> {
   }
 
   // ============================================================
-  // SETTINGS
-  // ============================================================
-
-  void _settingsChanged() {
-    ai.setDifficulty(
-      widget.settings.aiDifficulty,
-    );
-
-    audioService.setSoundEnabled(
-      widget.settings.soundEnabled,
-    );
-
-    audioService.setMusicEnabled(
-      widget.settings.musicEnabled,
-    );
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {});
-  }
-
-  // ============================================================
   // AUTO SAVE
   // ============================================================
 
@@ -166,7 +139,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
     _saveTimer = Timer.periodic(
       const Duration(seconds: 30),
       (_) async {
-        if (!gameFinished) {
+        if (!gameFinished && !engine.isGameOver) {
           await widget.storage.saveGame(engine);
         }
       },
@@ -217,7 +190,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
     final tappedPiece = engine.board[row][col];
 
     // ==========================================================
-    // SELECT YOUR PIECE
+    // SELECT PIECE
     // ==========================================================
 
     if (tappedPiece != null &&
@@ -258,7 +231,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
     }
 
     // ==========================================================
-    // CHECK WHETHER TAPPED SQUARE IS A LEGAL DESTINATION
+    // FIND LEGAL DESTINATION
     // ==========================================================
 
     final move = _findSelectedMove(
@@ -346,7 +319,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
     );
 
     // ==========================================================
-    // PLAYER STATISTICS
+    // STATISTICS
     // ==========================================================
 
     if (wasCapture &&
@@ -376,13 +349,13 @@ class _CheckersScreenState extends State<CheckersScreen> {
       setState(() {
         if (wasCapture &&
             additionalCaptures.isNotEmpty) {
-          // Keep the same piece selected.
           selectedRow = move.toRow;
           selectedCol = move.toCol;
 
-          // Show only the legal next capture destinations.
           availableMoves =
-              List<CheckersMove>.from(additionalCaptures);
+              List<CheckersMove>.from(
+            additionalCaptures,
+          );
         } else {
           selectedRow = null;
           selectedCol = null;
@@ -390,6 +363,10 @@ class _CheckersScreenState extends State<CheckersScreen> {
         }
       });
     }
+
+    // ==========================================================
+    // CHECK GAME END
+    // ==========================================================
 
     await _checkGameEnd();
 
@@ -404,7 +381,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
     }
 
     // ==========================================================
-    // AI
+    // AI TURN
     // ==========================================================
 
     if (widget.settings.isPlayerVsAi &&
@@ -459,9 +436,11 @@ class _CheckersScreenState extends State<CheckersScreen> {
     }
 
     if (move == null) {
-      setState(() {
-        aiThinking = false;
-      });
+      if (mounted) {
+        setState(() {
+          aiThinking = false;
+        });
+      }
 
       await _checkGameEnd();
       return;
@@ -471,9 +450,12 @@ class _CheckersScreenState extends State<CheckersScreen> {
         engine.board[move.fromRow][move.fromCol];
 
     if (movingPiece == null) {
-      setState(() {
-        aiThinking = false;
-      });
+      if (mounted) {
+        setState(() {
+          aiThinking = false;
+        });
+      }
+
       return;
     }
 
@@ -551,8 +533,11 @@ class _CheckersScreenState extends State<CheckersScreen> {
             additionalCaptures.isNotEmpty) {
           selectedRow = move.toRow;
           selectedCol = move.toCol;
+
           availableMoves =
-              List<CheckersMove>.from(additionalCaptures);
+              List<CheckersMove>.from(
+            additionalCaptures,
+          );
         } else {
           selectedRow = null;
           selectedCol = null;
@@ -560,6 +545,10 @@ class _CheckersScreenState extends State<CheckersScreen> {
         }
       });
     }
+
+    // ==========================================================
+    // CHECK GAME END
+    // ==========================================================
 
     await _checkGameEnd();
 
@@ -583,16 +572,48 @@ class _CheckersScreenState extends State<CheckersScreen> {
     }
 
     final winner = engine.winner();
+    final draw = engine.isDraw;
+
+    // ----------------------------------------------------------
+    // GAME STILL RUNNING
+    // ----------------------------------------------------------
+
+    if (winner == null && !draw) {
+      return;
+    }
+
+    gameFinished = true;
+    aiThinking = false;
+
+    selectedRow = null;
+    selectedCol = null;
+    availableMoves = [];
+
+    // ----------------------------------------------------------
+    // AUTOMATIC DRAW
+    // ----------------------------------------------------------
+
+    if (draw && winner == null) {
+      await _recordDrawResult(
+        showDialogAfterSave: true,
+      );
+
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // WIN / LOSS
+    // ----------------------------------------------------------
 
     if (winner == null) {
       return;
     }
 
-    gameFinished = true;
+    final gameWinner = winner;
 
     widget.statistics.recordGameResult(
       playerColor: PieceColor.red,
-      winner: winner,
+      winner: gameWinner,
       moves: engine.moveCount,
     );
 
@@ -603,7 +624,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
     final history = GameHistory(
       date: DateTime.now(),
       playerColor: PieceColor.red,
-      winner: winner,
+      winner: gameWinner,
       moves: engine.moveCount,
       captures: _countCapturesForCurrentGame(),
       kingsCreated: _countKingsForCurrentGame(),
@@ -623,7 +644,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
       return;
     }
 
-    if (winner == PieceColor.red) {
+    if (gameWinner == PieceColor.red) {
       await audioService.playWin();
     } else {
       await audioService.playLoss();
@@ -635,7 +656,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
 
     final String message;
 
-    if (winner == PieceColor.red) {
+    if (gameWinner == PieceColor.red) {
       message = 'You won!';
     } else {
       message = widget.settings.isPlayerVsAi
@@ -653,6 +674,247 @@ class _CheckersScreenState extends State<CheckersScreen> {
             '$message\n\n'
             'Moves: ${engine.moveCount}\n'
             'History saved.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                _playButton();
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('Close'),
+            ),
+            FilledButton(
+              onPressed: () {
+                _playButton();
+                Navigator.pop(dialogContext);
+                _newGame();
+              },
+              child: const Text('New Game'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ============================================================
+  // RECORD DRAW
+  // ============================================================
+
+  Future<void> _recordDrawResult({
+    required bool showDialogAfterSave,
+  }) async {
+    // A draw is now considered a completed game.
+    gameFinished = true;
+    aiThinking = false;
+
+    selectedRow = null;
+    selectedCol = null;
+    availableMoves = [];
+
+    // ----------------------------------------------------------
+    // STATISTICS
+    // ----------------------------------------------------------
+
+    widget.statistics.recordGameResult(
+      playerColor: PieceColor.red,
+      winner: null,
+      moves: engine.moveCount,
+    );
+
+    await widget.storage.saveStatistics(
+      widget.statistics,
+    );
+
+    // ----------------------------------------------------------
+    // HISTORY
+    // ----------------------------------------------------------
+
+    final history = GameHistory(
+      date: DateTime.now(),
+      playerColor: PieceColor.red,
+      winner: null,
+      moves: engine.moveCount,
+      captures: _countCapturesForCurrentGame(),
+      kingsCreated: _countKingsForCurrentGame(),
+      playerVsAi: widget.settings.isPlayerVsAi,
+      difficulty: _difficultyText(
+        widget.settings.aiDifficulty,
+      ),
+    );
+
+    await widget.historyService.addGame(
+      history,
+    );
+
+    // ----------------------------------------------------------
+    // REMOVE RESUMABLE SAVE
+    // ----------------------------------------------------------
+
+    await widget.storage.deleteSavedGame();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {});
+
+    if (!showDialogAfterSave) {
+      return;
+    }
+
+    await _showDrawDialog();
+  }
+
+  // ============================================================
+  // SAVE AS DRAW
+  // ============================================================
+
+  Future<void> _saveAsDraw() async {
+    await _playButton();
+
+    // ----------------------------------------------------------
+    // DO NOT ALLOW DRAW AFTER GAME IS FINISHED
+    // ----------------------------------------------------------
+
+    if (gameFinished) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This game has already finished.',
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // CHECK WHETHER THERE IS ALREADY A WINNER
+    // ----------------------------------------------------------
+
+    final winner = engine.winner();
+
+    if (winner != null || engine.isGameOver) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The game already has a winner and cannot be saved as a draw.',
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // AI MUST NOT BE THINKING
+    // ----------------------------------------------------------
+
+    if (aiThinking) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Please wait for the AI to finish its move.',
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // CONFIRM
+    // ----------------------------------------------------------
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Save as Draw?'),
+          content: const Text(
+            'Are you sure you want to end the current game as a draw?\n\n'
+            'The game will be completed and recorded in your '
+            'game history and statistics.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                _playButton();
+                Navigator.pop(
+                  dialogContext,
+                  false,
+                );
+              },
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                _playButton();
+                Navigator.pop(
+                  dialogContext,
+                  true,
+                );
+              },
+              icon: const Icon(
+                Icons.handshake_outlined,
+              ),
+              label: const Text('Save as Draw'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || confirmed != true) {
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // SAVE DRAW
+    // ----------------------------------------------------------
+
+    await _recordDrawResult(
+      showDialogAfterSave: true,
+    );
+  }
+
+  // ============================================================
+  // DRAW DIALOG
+  // ============================================================
+
+  Future<void> _showDrawDialog() async {
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Game Draw'),
+          content: Text(
+            'DRAW\n\n'
+            'Moves: ${engine.moveCount}\n'
+            'Game saved to history.',
           ),
           actions: [
             TextButton(
@@ -704,11 +966,27 @@ class _CheckersScreenState extends State<CheckersScreen> {
   }
 
   // ============================================================
-  // SAVE
+  // SAVE GAME
   // ============================================================
 
   Future<void> _saveGame() async {
     await _playButton();
+
+    if (gameFinished || engine.isGameOver) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Completed games cannot be saved as resumable games.',
+          ),
+        ),
+      );
+
+      return;
+    }
 
     final result =
         await widget.storage.saveGame(engine);
@@ -729,7 +1007,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
   }
 
   // ============================================================
-  // LOAD
+  // LOAD GAME
   // ============================================================
 
   Future<void> _loadGame() async {
@@ -743,13 +1021,16 @@ class _CheckersScreenState extends State<CheckersScreen> {
     }
 
     if (result) {
+      final winner = engine.winner();
+
       setState(() {
         selectedRow = null;
         selectedCol = null;
         availableMoves = [];
-
-        gameFinished = engine.isGameOver;
         aiThinking = false;
+
+        gameFinished =
+            engine.isGameOver || winner != null;
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -830,6 +1111,15 @@ class _CheckersScreenState extends State<CheckersScreen> {
                   onTap: () {
                     Navigator.pop(sheetContext);
                     _saveGame();
+                  },
+                ),
+
+                _menuItem(
+                  icon: Icons.handshake_outlined,
+                  title: 'Save as Draw',
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _saveAsDraw();
                   },
                 ),
 
@@ -1165,9 +1455,11 @@ class _CheckersScreenState extends State<CheckersScreen> {
                     return ListTile(
                       leading: CircleAvatar(
                         child: Icon(
-                          game.playerWon
-                              ? Icons.emoji_events
-                              : Icons.close,
+                          game.isDraw
+                              ? Icons.handshake_outlined
+                              : game.playerWon
+                                  ? Icons.emoji_events
+                                  : Icons.close,
                         ),
                       ),
                       title: Text(
@@ -1483,6 +1775,8 @@ class _CheckersScreenState extends State<CheckersScreen> {
                     }
 
                     Navigator.pop(dialogContext);
+
+                    setState(() {});
                   },
                   child: const Text('Done'),
                 ),
@@ -1540,7 +1834,9 @@ class _CheckersScreenState extends State<CheckersScreen> {
               '7. Reach the opposite end of the board '
               'to promote your piece to a king.\n\n'
               '8. Capture all opponent pieces or block '
-              'all their legal moves to win.',
+              'all their legal moves to win.\n\n'
+              '9. You can choose "Save as Draw" from the '
+              'menu to end the current unfinished game as a draw.',
             ),
           ),
           actions: [
@@ -1819,10 +2115,15 @@ class _CheckersScreenState extends State<CheckersScreen> {
               SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: boardSize,
           ),
-          itemCount: boardSize * boardSize,
-          itemBuilder: (context, index) {
+          itemCount:
+              boardSize * boardSize,
+          itemBuilder: (
+            context,
+            index,
+          ) {
             final row =
                 index ~/ boardSize;
+
             final col =
                 index % boardSize;
 
@@ -1847,7 +2148,8 @@ class _CheckersScreenState extends State<CheckersScreen> {
     final dark =
         (row + col).isOdd;
 
-    final boardSize = engine.board.length;
+    final boardSize =
+        engine.board.length;
 
     final piece =
         engine.board[row][col];
@@ -1899,24 +2201,31 @@ class _CheckersScreenState extends State<CheckersScreen> {
         );
       },
       child: AnimatedContainer(
-        duration: widget.settings.animationsEnabled
-            ? const Duration(milliseconds: 120)
-            : Duration.zero,
+        duration:
+            widget.settings.animationsEnabled
+                ? const Duration(
+                    milliseconds: 120,
+                  )
+                : Duration.zero,
         decoration: BoxDecoration(
           color: squareColor,
           border: selected
               ? Border.all(
-                  color: Colors.yellowAccent,
-                  width: boardSize <= 8 ? 3 : 2.5,
+                  color:
+                      Colors.yellowAccent,
+                  width:
+                      boardSize <= 8
+                          ? 3
+                          : 2.5,
                 )
               : null,
         ),
         child: Stack(
           alignment: Alignment.center,
           children: [
-            // ====================================================
+            // ==================================================
             // COORDINATES
-            // ====================================================
+            // ==================================================
 
             if (widget.settings.showCoordinates &&
                 col == 0)
@@ -1927,7 +2236,9 @@ class _CheckersScreenState extends State<CheckersScreen> {
                   '${boardSize - row}',
                   style: TextStyle(
                     fontSize:
-                        boardSize <= 8 ? 9 : 7,
+                        boardSize <= 8
+                            ? 9
+                            : 7,
                     fontWeight:
                         FontWeight.bold,
                     color: dark
@@ -1948,7 +2259,9 @@ class _CheckersScreenState extends State<CheckersScreen> {
                   ),
                   style: TextStyle(
                     fontSize:
-                        boardSize <= 8 ? 9 : 7,
+                        boardSize <= 8
+                            ? 9
+                            : 7,
                     fontWeight:
                         FontWeight.bold,
                     color: dark
@@ -1958,9 +2271,9 @@ class _CheckersScreenState extends State<CheckersScreen> {
                 ),
               ),
 
-            // ====================================================
-            // LEGAL MOVE YELLOW DOT
-            // ====================================================
+            // ==================================================
+            // LEGAL MOVE DOT
+            // ==================================================
 
             if (legal &&
                 widget.settings.showLegalMoves)
@@ -1969,9 +2282,9 @@ class _CheckersScreenState extends State<CheckersScreen> {
                 boardSize: boardSize,
               ),
 
-            // ====================================================
+            // ==================================================
             // PIECE
-            // ====================================================
+            // ==================================================
 
             if (piece != null)
               _buildPiece(
@@ -2004,7 +2317,7 @@ class _CheckersScreenState extends State<CheckersScreen> {
   }
 
   // ============================================================
-  // YELLOW LEGAL MOVE DOT
+  // LEGAL MOVE DOT
   // ============================================================
 
   Widget _buildLegalMoveIndicator({
@@ -2014,31 +2327,37 @@ class _CheckersScreenState extends State<CheckersScreen> {
     final double size;
 
     if (hasPiece) {
-      size = boardSize <= 8 ? 9 : 7;
+      size =
+          boardSize <= 8 ? 9 : 7;
     } else {
-      size = boardSize <= 8 ? 16 : 12;
+      size =
+          boardSize <= 8 ? 16 : 12;
     }
 
     return IgnorePointer(
-  child: AnimatedContainer(
-    duration: widget.settings.animationsEnabled
-        ? const Duration(milliseconds: 120)
-        : Duration.zero,
-    width: size,
-    height: size,
-    decoration: const BoxDecoration(
-      shape: BoxShape.circle,
-      color: Colors.yellowAccent,
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black45,
-          blurRadius: 4,
-          spreadRadius: 1,
+      child: AnimatedContainer(
+        duration:
+            widget.settings.animationsEnabled
+                ? const Duration(
+                    milliseconds: 120,
+                  )
+                : Duration.zero,
+        width: size,
+        height: size,
+        decoration:
+            const BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.yellowAccent,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black45,
+              blurRadius: 4,
+              spreadRadius: 1,
+            ),
+          ],
         ),
-      ],
-    ),
-  ),
-);
+      ),
+    );
   }
 
   // ============================================================
@@ -2057,9 +2376,10 @@ class _CheckersScreenState extends State<CheckersScreen> {
         boardSize <= 8 ? 42 : 34;
 
     return AnimatedContainer(
-      duration: widget.settings.animationsEnabled
-          ? widget.settings.moveAnimationDuration
-          : Duration.zero,
+      duration:
+          widget.settings.animationsEnabled
+              ? widget.settings.moveAnimationDuration
+              : Duration.zero,
       width: pieceSize,
       height: pieceSize,
       decoration: BoxDecoration(
@@ -2081,27 +2401,22 @@ class _CheckersScreenState extends State<CheckersScreen> {
                   Color(0xFF303030),
                 ],
         ),
-
-        // ========================================================
-        // SELECTED PIECE BORDER
-        // ========================================================
-
         border: Border.all(
           color: selected
               ? Colors.yellowAccent
               : Colors.white24,
           width: selected
-              ? (boardSize <= 8 ? 3.5 : 2.5)
+              ? (boardSize <= 8
+                  ? 3.5
+                  : 2.5)
               : 1,
         ),
-
         boxShadow: [
           const BoxShadow(
             blurRadius: 5,
             offset: Offset(0, 3),
             color: Colors.black54,
           ),
-
           if (selected)
             const BoxShadow(
               blurRadius: 10,
@@ -2113,7 +2428,10 @@ class _CheckersScreenState extends State<CheckersScreen> {
       child: piece.isKing
           ? Icon(
               Icons.workspace_premium,
-              size: boardSize <= 8 ? 22 : 17,
+              size:
+                  boardSize <= 8
+                      ? 22
+                      : 17,
               color: Colors.amber,
             )
           : null,
@@ -2137,30 +2455,40 @@ class _CheckersScreenState extends State<CheckersScreen> {
             pieces: engine.redPieces,
             captured: engine.redCaptured,
             active:
-                engine.turn == PieceColor.red,
+                engine.turn ==
+                    PieceColor.red,
           ),
 
           const SizedBox(height: 12),
 
           _buildPlayerCard(
-            name: widget.settings.isPlayerVsAi
-                ? 'BLACK • AI'
-                : 'BLACK PLAYER',
-            pieceColor: PieceColor.black,
-            pieces: engine.blackPieces,
-            captured: engine.blackCaptured,
+            name:
+                widget.settings.isPlayerVsAi
+                    ? 'BLACK • AI'
+                    : 'BLACK PLAYER',
+            pieceColor:
+                PieceColor.black,
+            pieces:
+                engine.blackPieces,
+            captured:
+                engine.blackCaptured,
             active:
-                engine.turn == PieceColor.black,
+                engine.turn ==
+                    PieceColor.black,
           ),
 
           const SizedBox(height: 15),
 
           Container(
-            padding: const EdgeInsets.all(15),
+            padding:
+                const EdgeInsets.all(15),
             decoration: BoxDecoration(
-              color: const Color(0xFF161B22),
+              color:
+                  const Color(0xFF161B22),
               borderRadius:
-                  BorderRadius.circular(16),
+                  BorderRadius.circular(
+                16,
+              ),
               border: Border.all(
                 color: Colors.white10,
               ),
@@ -2169,12 +2497,14 @@ class _CheckersScreenState extends State<CheckersScreen> {
               children: [
                 Row(
                   mainAxisAlignment:
-                      MainAxisAlignment.spaceBetween,
+                      MainAxisAlignment
+                          .spaceBetween,
                   children: [
                     const Text(
                       'MOVES',
                       style: TextStyle(
-                        color: Colors.white54,
+                        color:
+                            Colors.white54,
                         fontSize: 11,
                         fontWeight:
                             FontWeight.bold,
@@ -2182,7 +2512,8 @@ class _CheckersScreenState extends State<CheckersScreen> {
                     ),
                     Text(
                       '${engine.moveCount}',
-                      style: const TextStyle(
+                      style:
+                          const TextStyle(
                         fontWeight:
                             FontWeight.bold,
                       ),
@@ -2194,12 +2525,14 @@ class _CheckersScreenState extends State<CheckersScreen> {
 
                 Row(
                   mainAxisAlignment:
-                      MainAxisAlignment.spaceBetween,
+                      MainAxisAlignment
+                          .spaceBetween,
                   children: [
                     const Text(
                       'DIFFICULTY',
                       style: TextStyle(
-                        color: Colors.white54,
+                        color:
+                            Colors.white54,
                         fontSize: 11,
                         fontWeight:
                             FontWeight.bold,
@@ -2207,7 +2540,8 @@ class _CheckersScreenState extends State<CheckersScreen> {
                     ),
                     Text(
                       ai.difficultyName,
-                      style: const TextStyle(
+                      style:
+                          const TextStyle(
                         fontWeight:
                             FontWeight.bold,
                       ),
@@ -2219,12 +2553,14 @@ class _CheckersScreenState extends State<CheckersScreen> {
 
                 Row(
                   mainAxisAlignment:
-                      MainAxisAlignment.spaceBetween,
+                      MainAxisAlignment
+                          .spaceBetween,
                   children: [
                     const Text(
                       'RULES',
                       style: TextStyle(
-                        color: Colors.white54,
+                        color:
+                            Colors.white54,
                         fontSize: 11,
                         fontWeight:
                             FontWeight.bold,
@@ -2233,13 +2569,16 @@ class _CheckersScreenState extends State<CheckersScreen> {
                     Flexible(
                       child: Text(
                         _ruleVariantName(
-                          ruleManager.currentVariant,
+                          ruleManager
+                              .currentVariant,
                         ),
                         textAlign:
                             TextAlign.right,
-                        style: const TextStyle(
+                        style:
+                            const TextStyle(
                           fontWeight:
-                              FontWeight.bold,
+                              FontWeight
+                                  .bold,
                         ),
                       ),
                     ),
@@ -2249,13 +2588,17 @@ class _CheckersScreenState extends State<CheckersScreen> {
                 const SizedBox(height: 15),
 
                 SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _newGame,
+                  width:
+                      double.infinity,
+                  child:
+                      FilledButton.icon(
+                    onPressed:
+                        _newGame,
                     icon: const Icon(
                       Icons.refresh,
                     ),
-                    label: const Text(
+                    label:
+                        const Text(
                       'NEW GAME',
                     ),
                   ),
@@ -2285,7 +2628,8 @@ class _CheckersScreenState extends State<CheckersScreen> {
     return AnimatedContainer(
       duration:
           const Duration(milliseconds: 200),
-      padding: const EdgeInsets.all(15),
+      padding:
+          const EdgeInsets.all(15),
       decoration: BoxDecoration(
         color: active
             ? const Color(0xFF20262E)
@@ -2298,7 +2642,8 @@ class _CheckersScreenState extends State<CheckersScreen> {
                   ? Colors.redAccent
                   : Colors.white54)
               : Colors.white10,
-          width: active ? 1.5 : 1,
+          width:
+              active ? 1.5 : 1,
         ),
       ),
       child: Row(
@@ -2329,19 +2674,25 @@ class _CheckersScreenState extends State<CheckersScreen> {
               children: [
                 Text(
                   name,
-                  style: const TextStyle(
+                  style:
+                      const TextStyle(
                     fontSize: 11,
                     fontWeight:
                         FontWeight.bold,
-                    letterSpacing: 0.8,
+                    letterSpacing:
+                        0.8,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(
+                  height: 4,
+                ),
                 Text(
                   '$pieces pieces',
-                  style: const TextStyle(
+                  style:
+                      const TextStyle(
                     fontSize: 12,
-                    color: Colors.white54,
+                    color:
+                        Colors.white54,
                   ),
                 ),
               ],
@@ -2356,12 +2707,14 @@ class _CheckersScreenState extends State<CheckersScreen> {
                 'CAPTURED',
                 style: TextStyle(
                   fontSize: 8,
-                  color: Colors.white38,
+                  color:
+                      Colors.white38,
                 ),
               ),
               Text(
                 '$captured',
-                style: const TextStyle(
+                style:
+                    const TextStyle(
                   fontSize: 16,
                   fontWeight:
                       FontWeight.bold,

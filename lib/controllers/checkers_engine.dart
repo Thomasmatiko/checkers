@@ -1,4 +1,3 @@
-
 import '../models/game_piece.dart';
 import '../models/checkers_move_history.dart';
 import '../models/checkers_rules.dart';
@@ -76,6 +75,12 @@ class CheckersEngine {
   int? forcedCaptureRow;
   int? forcedCaptureCol;
 
+  /// True when the current game has been manually ended
+  /// and saved as a draw by the player.
+  ///
+  /// This is different from the automatic no-progress draw.
+  bool manuallySavedAsDraw = false;
+
   CheckersEngine({
     RulesConfig? rules,
   }) : rulesConfig =
@@ -144,6 +149,9 @@ class CheckersEngine {
 
     forcedCaptureRow = null;
     forcedCaptureCol = null;
+
+    // A new game must not inherit a previous draw.
+    manuallySavedAsDraw = false;
 
     _undoStack.clear();
     _redoStack.clear();
@@ -935,6 +943,11 @@ class CheckersEngine {
       return false;
     }
 
+    // A manually saved draw is already finished.
+    if (manuallySavedAsDraw) {
+      return false;
+    }
+
     final piece =
         board[move.fromRow][move.fromCol];
 
@@ -1266,20 +1279,48 @@ class CheckersEngine {
     return null;
   }
 
-  bool get isGameOver =>
-      winner() != null || isDraw;
+  bool get isGameOver {
+    return winner() != null || isDraw;
+  }
 
   // ============================================================
   // DRAW
   // ============================================================
 
+  /// Returns true when the current game is a draw.
+  ///
+  /// A draw can happen in two ways:
+  ///
+  /// 1. The automatic no-progress rule reaches [drawMoveLimit].
+  /// 2. The player manually ends the game using [saveAsDraw].
   bool get isDraw {
+    // A player who has already won must not also be
+    // reported as having a draw.
     if (winner() != null) {
       return false;
     }
 
-    return noProgressMoveCount >=
-        drawMoveLimit;
+    return manuallySavedAsDraw ||
+        noProgressMoveCount >= drawMoveLimit;
+  }
+
+  /// Ends the current game as a manually agreed draw.
+  ///
+  /// This does not modify statistics or game history.
+  /// The screen/service layer is responsible for recording
+  /// the completed game.
+  void saveAsDraw() {
+    // Do nothing if the game has already been won.
+    if (winner() != null) {
+      return;
+    }
+
+    manuallySavedAsDraw = true;
+
+    // A manually completed draw must not leave the engine
+    // waiting for another capture during a multiple capture.
+    forcedCaptureRow = null;
+    forcedCaptureCol = null;
   }
 
   // ============================================================
@@ -1329,6 +1370,10 @@ class CheckersEngine {
 
       'noProgressMoveCount':
           noProgressMoveCount,
+
+      // Saves the manual draw state.
+      'manuallySavedAsDraw':
+          manuallySavedAsDraw,
 
       'moveHistory': moveHistory
           .map(
@@ -1458,6 +1503,11 @@ class CheckersEngine {
       json['noProgressMoveCount'],
     );
 
+    // Older saved games will not contain this field.
+    // Missing field correctly means false.
+    manuallySavedAsDraw =
+        json['manuallySavedAsDraw'] == true;
+
     moveHistory.clear();
 
     final rawHistory =
@@ -1490,6 +1540,13 @@ class CheckersEngine {
         _nullableInt(
       json['forcedCaptureCol'],
     );
+
+    // A manually saved draw has already finished,
+    // therefore it cannot continue a multiple capture.
+    if (manuallySavedAsDraw) {
+      forcedCaptureRow = null;
+      forcedCaptureCol = null;
+    }
 
     if (!preserveUndoRedo) {
       _undoStack.clear();
